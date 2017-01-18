@@ -1,0 +1,1387 @@
+<!DOCTYPE html>
+
+<html lang="ko">
+<head>
+	<title></title>
+	<script src="./js/cfb.js" type="text/javascript"></script>
+	<script src="./js/rawinflate.min.js" charset="utf-8"></script>
+	<script src="./js/pako_inflate.js" charset="utf-8"></script>
+ 	<meta http-equiv="Content-type" content="text/html; charset=UTF-8"/>
+    <meta http-equiv="Content-style-type" content="text/css"/>
+    <link rel="stylesheet" href="http://code.jquery.com/ui/1.11.4/themes/smoothness/jquery-ui.css">
+  <script src="http://code.jquery.com/jquery-1.10.2.js"></script>
+  <script src="http://code.jquery.com/ui/1.11.4/jquery-ui.js"></script>
+<script type="text/javascript">
+
+/*
+** 제작자   이원우 email : lww2578@gmail.com
+** 도움자   국동현 email : kukdh1@naver.com
+*/
+
+var BEGIN = 16;
+var DOCUMENT_PROPERTIES = 16;
+var ID_MAPPINGS = 17;
+var BIN_DATA = 18;
+var FACE_NAME = 19;
+var BORDER_FILL = 20;
+var CHAR_SHAPE = 21;
+var TAB_DEF = 22;
+var NUMBERING = 23;
+var BULLET = 24;
+var PARA_SHAPE = 25;
+var STYLE = 26;
+var DOC_DATA = 27;
+var DISTRIBUTE_DOC_DATA = 28;
+// 13: Reserved
+var COMPATIBLE_DOCUMENT = 30;
+var LAYOUT_COMPATIBILITY = 31;
+var FORBIDDEN_CHAR = 94;
+var PARA_HEADER = 66;
+var PARA_TEXT = 67;
+var PARA_CHAR_SHAPE = 68;
+var PARA_LINE_SEG = 69;
+var PARA_RANGE_TAG = 70;
+var CTRL_HEADER = 71;
+var LIST_HEADER = 72;
+var PAGE_DEF = 73;
+var FOOTNOTE_SHAPE = 74;
+var PAGE_BORDER_FILL = 75;
+var SHAPE_COMPONENT = 76;
+var TABLE = 77;
+var SHAPE_COMPONENT_LINE = 78;
+var SHAPE_COMPONENT_RECTANGLE = 79;
+var SHAPE_COMPONENT_ELLIPSE = 80;
+var SHAPE_COMPONENT_ARC = 81;
+var SHAPE_COMPONENT_POLYGON = 82;
+var SHAPE_COMPONENT_CURVE = 83;
+var SHAPE_COMPONENT_OLE = 84;
+var SHAPE_COMPONENT_PICTURE = 85;
+var SHAPE_COMPONENT_CONTAINER = 86;
+var CTRL_DATA = 87;
+var EQEDIT = 88;
+// 73: Reserved
+var SHAPE_COMPONENT_TEXTART = 90;
+var FORM_OBJECT = 91;
+var MEMO_SHAPE = 92;
+var MEMO_LIST = 93;
+var CHART_DATA = 95;
+var SHAPE_COMPONENT_UNKNOWN = 115;
+
+var levelStack = [-1];
+var stackIdx   = 0;
+
+var row = 0;
+var col = 0;
+var preRow = -1;
+
+var spantext = "";
+
+var m_Id  = [];
+var m_Pos = [];
+
+var v_Context 	   = [];
+var v_ContextAlign = [];
+
+var currentDOM = [];
+var preDOM	   = null;
+var domIdx     = -1;
+
+function hexToBase64(str) 
+{
+    return btoa(String.fromCharCode.apply(null, str.replace(/\r|\n/g, "").replace(/([\da-fA-F]{2}) ?/g, "0x$1 ").replace(/ +$/, "").split(" ")));
+}
+
+function h2d(h) 
+{
+	
+	var temp = "0x";
+	
+	for(i=0;i<4;i++)
+	{
+		temp += "" + h[i];
+	}
+	
+	return parseInt(temp,16);
+}
+
+function htd(h) 
+{
+	
+	return parseInt(h,16);
+
+}
+
+
+/*
+	ex) var binary = [0x1, 0x2, 0x3, 0x4];
+		var s = SplitOffsetBE(binary,0,4);
+		console.log(s);
+		output : 0x01 0x02 0x03 0x04
+		빅엔디안
+*/
+var SplitOffsetBE = function(binary,offset,width)
+{
+
+	var length = [];
+	var k = 0;
+	
+	for(i=offset;i<offset+width;i++)
+	{
+		length[k++] = binary[i];
+	}
+
+	return length;
+};
+
+
+/*
+	ex) var binary = [0x1, 0x2, 0x3, 0x4];
+		var s = SplitOffsetBE(binary,0,4);
+		console.log(s);
+		output : 0x04 0x03 0x02 0x01
+		리틀엔디안
+*/
+var SplitOffsetLE = function(binary,offset,width)
+{
+	
+	var length = [];
+	var k = 0;
+
+	for(i=offset+width-1;i>=offset;i--)
+	{
+		length[k++] = binary[i];
+	}
+
+	return length;
+};
+
+/*
+	FileSignature를 확인한후에 파일이 맞으면 true 반환
+	else
+		return false
+*/
+var CheckHwp = function(stream)
+{
+	if("HWP Document File" == stream)
+	{
+		return true;
+	}
+
+	return false;
+};
+
+function getBytes(str)
+{
+	
+	var bytes = [];
+
+	for (var i = 0; i < str.length; ++i)
+	{
+    	bytes.push(str.charCodeAt(i));
+	}
+
+	return bytes;
+};
+
+
+function hex2ha(hex,len)
+{
+	
+	var str = "";
+	
+	for(i=0;i<len;i++)
+	{
+		
+		if(0x00 == hex[i])
+		{
+			continue;
+		}
+
+		str += "" + String.fromCharCode(hex[i]);
+	}
+
+	return str;
+
+}
+
+function hex2ta(hex,len)
+{
+	
+	var str = "";
+	
+	for(i=0;i<len;i++)
+	{
+		
+		if(32 == hex[i])
+		{
+			str += " ";
+		}
+		else
+		{
+			str += "" + String.fromCharCode(hex[i]);
+		}
+	}
+
+	return str;
+
+}
+
+var CHAR_TO_TAG = 
+{
+	'9': 'TAB',
+	'10': 'LINEBREAK',
+	'24': 'HYPEN',
+	'30': 'NBSPACE',
+	'31': 'FWSPACE'
+};
+
+var getBinDataCount = function(stream)
+{
+	var cnt = 0;
+	var i   = 0;
+		
+		for( i = 0; i < stream.length; i++ )
+		{
+			if(0x12 == stream[i])
+			{
+				if(0xc0 == stream[i+2] || 0xe0 == stream[i+2])
+				{
+					cnt++;
+				}
+			}
+		}
+
+	return cnt;
+};
+
+var setBinData = function(stream,binCnt)
+{
+	var temp = new Array(binCnt);
+	var i    = 0;
+	var k    = 0;
+
+		for( z = 0; z < binCnt; z++ )
+		{
+			temp[z] = new Array(2);
+		}
+
+		for( i = 0; i < stream.length; i++)
+		{
+
+			if(stream[i].name.substring(0,3) == "BIN")
+			{
+				temp[k] = stream[i].name;
+				k++;
+			}
+		
+		}
+
+		return temp;
+
+};
+
+var d2h = function(d)
+{
+	//console.log(d);
+	if(0x00 == d)
+	{
+		return "00";
+	}
+	else if(d <= 0xf)
+	{
+		return "0"+d.toString(16);
+	}
+
+	return d.toString(16);
+
+};
+
+var dth = function(d)
+{
+	var i = 0;
+	var str = "0x";
+	for( i = 0; i < 4; i++ )
+	{
+			if(0x00 == d[i])
+			{
+				str += "00";
+			}
+			else if(d[i] <= 0xf)
+			{
+				str += "0" + d[i].toString(16);
+			}
+			else
+			{
+				str += "" + d[i].toString(16);
+			}
+	}
+
+	return str;
+
+};
+
+var dth3 = function(d)
+{
+	var i = 0;
+	var str = "";
+	for( i = 0; i < 3; i++ )
+	{
+			if(0x00 == d[i])
+			{
+				str += "00";
+			}
+			else if(d[i] <= 0xf)
+			{
+				str += "0" + d[i].toString(16);
+			}
+			else
+			{
+				str += "" + d[i].toString(16);
+			}
+	}
+
+	return str;
+
+};
+
+var dth2 = function(d)
+{
+	var i = 0;
+	var str = "0x";
+	for( i = 0; i < 2; i++ )
+	{
+			if(0x00 == d[i])
+			{
+				str += "00";
+			}
+			else if(d[i] <= 0xf)
+			{
+				str += "0" + d[i].toString(16);
+			}
+			else
+			{
+				str += "" + d[i].toString(16);
+			}
+	}
+
+	return str;
+
+};
+
+var replaceText = function(t, id, pos)
+{
+
+	var h = [];
+	var i = 0;
+	var k = 0;
+	var j = 0;
+
+	for( i = 0; i < t.length; i++ )
+	{
+		if(t[i] == ',')
+		{
+			for(k = i - 6; k < i; k++)
+			{
+				if( k == i - 6 )
+				{
+					h[j] = t[k];
+				}
+				else
+				{
+					h[j] += t[k];
+				}
+			}
+			j++;	
+		}
+	}
+
+	h = new Uint16Array(h);
+	ShowText(hex2ta(h,h.length),id,pos);
+
+};
+
+var replaceTextToTable = function(t, id, pos)
+{
+
+	var h = [];
+	var i = 0;
+	var k = 0;
+	var j = 0;
+
+	for( i = 0; i < t.length; i++ )
+	{
+		if(t[i] == ',')
+		{
+			for(k = i - 6; k < i; k++)
+			{
+				if( k == i - 6 )
+				{
+					h[j] = t[k];
+				}
+				else
+				{
+					h[j] += t[k];
+				}
+			}
+			j++;	
+		}
+	}
+
+	h = new Uint16Array(h);
+	ShowTableText(hex2ta(h,h.length),id,pos);
+
+};
+
+var tid = 1;
+var tflag = 0;
+var pflag = 1;
+var cflag = -1;
+
+var createTable = function()
+{
+	console.log("create table");	
+	var table    = document.createElement('table');
+		table.id = "table" + tid;
+		table.setAttribute("cellspacing","0px");
+		table.setAttribute("style","border-style:solid;border-color:black;border-width:0px");
+		preRow = -1;
+		
+		if(0 == stackIdx)
+		{
+			document.getElementById('plz').appendChild(table);
+		}
+		else
+		{
+			currentDOM[domIdx].appendChild(table);
+		}
+
+		pflag = 1;
+		
+		tid++;
+};
+
+
+var replaceTextToRect = function(t, id, pos)
+{
+
+	var h = [];
+	var i = 0;
+	var k = 0;
+	var j = 0;
+
+	for( i = 0; i < t.length; i++ )
+	{
+		if(t[i] == ',')
+		{
+			for(k = i - 6; k < i; k++)
+			{
+				if( k == i - 6 )
+				{
+					h[j] = t[k];
+				}
+				else
+				{
+					h[j] += t[k];
+				}
+			}
+			j++;	
+		}
+	}
+
+	h = new Uint16Array(h);
+	showRectText(hex2ta(h,h.length),id,pos);
+
+};
+
+var did = 1;
+
+var createRect = function()
+{
+	var divRect = document.createElement('div');
+		divRect.id = "rect" + did;
+		divRect.setAttribute("style","border-style:solid;border-color:black;border-width:1px;position:relative;");
+
+		if(0 == stackIdx)
+		{
+			document.getElementById('plz').appendChild(divRect);
+		}
+		else
+		{
+			currentDOM[domIdx].appendChild(divRect);
+		}
+
+		did++;		
+
+};
+
+
+var rectEffect = function(width,height,zindex)
+{
+	var divRect = document.getElementById("rect" + (did - 1));
+		divRect.style.width  = "" + width * 40 + "px";
+		divRect.style.height = "" + height * 40 + "px";
+		divRect.style.zIndex = zindex;
+};
+
+var rectXY = function(top,left,radius)
+{
+	var divRect = document.getElementById("rect" + (did - 1));
+		
+		divRect.style.borderRadius = radius*2 + "px";
+}
+var tableEffect = function(width,height)
+{
+	var effectTable = document.getElementById("table" + (tid - 1));
+		effectTable.style.width  = "" + width * 40 + "px";
+		effectTable.style.height = "" + height * 40 + "px";
+};
+
+var getOffset = function(stream,len)
+{
+
+	var offset = SplitOffsetBE(stream,len + 2,2);
+	var off1   = "" + d2h(offset[0]);
+	var off2   = "" + d2h(offset[1]);
+		
+		offset = 0;
+		
+		offset = parseInt(off2+off1,16) >> 4;
+
+	return offset;
+
+};
+
+var getLevel = function(stream,len)
+{
+	var level = SplitOffsetLE(stream,len,4);
+	var rs    = "" + d2h(level[0]) + d2h(level[1]) + d2h(level[2]) + d2h(level[3]);
+	//console.log("rs  : " + rs);
+		rs    = parseInt(rs,16) & 0xFFA00;
+		rs    = rs >> 10;
+	return rs; 
+
+}
+
+
+
+var processParaText = function(stream,len)
+{
+
+	var idx       = getOffset(stream,len);
+	var tidx      = 0;
+	var flag      = 0;
+	var plainText = "";
+
+	var level     = getLevel(stream,len);
+	
+	var ctrlIds   = 0;
+	console.log("level : " + level);
+
+	if(-1 == levelStack[0])
+	{
+		levelStack[0] = level;
+	}
+	else if(levelStack[stackIdx] != level)
+	{
+		if(levelStack[stackIdx] < level)
+		{
+			levelStack.push(level);
+			stackIdx++;
+			
+			
+			preRow = 0;
+			
+			console.log("level > ");
+		
+		}
+		else
+		{
+			
+			if(1 == tflag)
+			{
+				currentDOM.pop();
+				domIdx--;
+			}
+
+			levelStack.pop();
+			
+			stackIdx--;
+			
+			preRow = -1;
+			
+		}
+	}
+
+	
+	
+	for( tidx = len + 4; tidx < len + 4 + idx; tidx+=2)
+	{
+		flag = 0;
+		switch(parseInt("0x" + d2h(stream[tidx + 1]) + d2h(stream[tidx])))
+		{
+
+			//CONTROL_CHARS
+			case 0: 
+			case 10: 
+			case 13:
+			case 24:
+			case 25:
+			case 26: 
+			case 27: 
+			case 28: 
+			case 29: 
+			case 30: 
+			case 31:
+				flag = 1;
+			break;
+
+			//INLINE_CHARS
+			case 4:
+			case 5: 
+			case 6: 
+			case 7: 
+			case 8: 
+			case 9: 
+			case 19: 
+			case 20:
+				tidx += 14;
+				flag = 1;
+			break;
+
+			//EXTENDED_CHARS
+			case 11:
+				var ctrlId = SplitOffsetLE(stream,tidx+2,4);
+				switch(hex2ha(ctrlId,4))
+				{
+					case "tbl ":
+						
+						tflag = 1;
+						createTable();
+						tidx += 16;
+					break;
+					case "gso ":
+						tflag = 0;
+						createRect();
+						tidx += 16;
+					break;
+
+				}
+
+				break;
+			case 1: 
+			case 2:
+			case 3: 
+			case 12: 
+			case 14: 
+			case 15: 
+			case 16: 
+			case 17: 
+			case 18: 
+			case 21: 
+			case 22:
+			case 23:
+				tidx += 14;
+				flag = 1;
+			break;
+			
+			default:
+			break;
+
+		}
+
+		if( 0 == flag)
+		{
+			plainText += "0x" + d2h(stream[tidx + 1]) + d2h(stream[tidx]) + ",";
+		}
+
+	}
+		
+	//plainText += "\r\n";
+
+	/*if(0 == levelStack[stackIdx])
+	{
+		replaceText(plainText);
+	}
+	else
+	{
+		replaceTextToTable(plainText);
+	}*/
+
+	spantext = plainText;
+
+	plainText = "";
+
+};
+
+var current_ref_id = 0;
+
+var ShowText = function(t,id,pos)
+{
+	
+	var i = 0;
+	var k = 0;
+	var text = "";
+	var pTag      = document.createElement('p');
+	
+				//console.log(t);
+		if(1 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "left";
+		}
+		else if(2 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "right";	
+		}
+		else if(3 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "center";
+		}
+
+		for( i = 0; i < pos.length; i++)
+		{
+			var spantag = document.createElement('span');
+				
+				var next = i + 1 < pos.length ? pos[i+1] : t.length;
+
+				for(k = pos[i]; k < next; k++)
+				{
+					if(" " == t[k])
+					{
+						text += "&nbsp;";
+					}
+					else
+					{
+						text += t[k];
+					}
+						//console.log(t[k]);
+				}
+
+					spantag.style.fontSize = v_Context[m_Id[i]].font_size + "pt";
+
+				if(v_Context[m_Id[i]].italic)
+				{
+					spantag.style.fontStyle = "italic";
+				}
+
+				if(v_Context[m_Id[i]].bold)
+				{
+					spantag.style.fontWeight = "bold";
+				}
+
+				if(v_Context[m_Id[i]].under_line)
+				{
+					spantag.style.textDecoration = "underline";
+				}
+
+					spantag.style.color = "#" + v_Context[m_Id[i]].colors;
+				
+			spantag.innerHTML = text;
+			pTag.appendChild(spantag);
+			text = "";
+
+		}
+
+	var showArea  = document.getElementById('plz');
+		showArea.appendChild(pTag);
+
+};
+
+
+var ShowTableText = function(t,id,pos)
+{
+
+	var i = 0;
+	var k = 0;
+	var text = "&nbsp;";
+	//var td   = document.getElementById("td" + (tid-1) + col + row);
+	td = currentDOM[domIdx];
+
+	var pTag = document.createElement('p');
+
+		if(1 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "left";
+		}
+		else if(2 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "right";	
+		}
+		else if(3 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "center";
+		}
+
+		for( i = 0; i < pos.length; i++)
+		{
+			
+			var spantag = document.createElement('span');
+				
+				var next = i + 1 < pos.length ? pos[i+1] : t.length;
+
+				for(k = pos[i]; k < next; k++)
+				{
+
+					if(" " == t[k])
+					{
+						text += "&nbsp;";
+					}
+					else
+					{
+						text += t[k];
+					}
+				}		
+
+				spantag.style.fontSize = v_Context[m_Id[i]].font_size +  "pt";
+
+				if(v_Context[m_Id[i]].italic)
+				{
+					spantag.style.fontStyle = "italic";
+				}
+
+				if(v_Context[m_Id[i]].bold)
+				{
+					spantag.style.fontWeight = "bold";
+				}
+
+				if(v_Context[m_Id[i]].under_line)
+				{
+					spantag.style.textDecoration = "underline";
+				}
+
+					spantag.style.color = "#" + v_Context[m_Id[i]].colors;
+					
+			spantag.innerHTML = text;
+			pTag.appendChild(spantag);
+			text = "";
+
+		}
+
+		td.appendChild(pTag);
+};
+
+var showRectText = function(t,id,pos)
+{
+	var divRect = document.getElementById("rect" + (did - 1));
+	var i = 0;
+	var k = 0;
+	var text = "";
+	var pTag = document.createElement('p');
+
+		if(1 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "left";
+		}
+		else if(2 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "right";	
+		}
+		else if(3 == v_ContextAlign[current_ref_id].aligns)
+		{
+			pTag.style.textAlign = "center";
+		}
+
+		for( i = 0; i < pos.length; i++)
+		{
+			
+			var spantag = document.createElement('span');
+				
+				var next = i + 1 < pos.length ? pos[i+1] : t.length;
+
+				for(k = pos[i]; k < next; k++)
+				{
+					if(" " == t[k])
+					{
+						text += "&nbsp;";
+					}
+					else
+					{
+						text += t[k];
+					}
+				}		
+
+				spantag.style.fontSize = v_Context[m_Id[i]].font_size +  "pt";
+
+				if(v_Context[m_Id[i]].italic)
+				{
+					spantag.style.fontStyle = "italic";
+				}
+
+				if(v_Context[m_Id[i]].bold)
+				{
+					spantag.style.fontWeight = "bold";
+				}
+
+				if(v_Context[m_Id[i]].under_line)
+				{
+					spantag.style.textDecoration = "underline";
+				}
+
+					spantag.style.color = "#" + v_Context[m_Id[i]].colors;
+					
+			spantag.innerHTML = text;
+			pTag.appendChild(spantag);
+			text = "";
+
+		}
+
+		divRect.appendChild(pTag);
+		
+};
+
+
+var processCell = function(stream,len)
+{
+
+	console.log("process Cell");
+	var targetTable  = document.getElementById("table" + (tid-1));
+	var contentNum   = SplitOffsetLE(stream,len+4,4);
+	var setAttribute = SplitOffsetLE(stream,len+8,4);
+	var colAddr      = SplitOffsetLE(stream,len+12,2);
+		col          = htd(dth2(colAddr));
+	var rowAddr      = SplitOffsetLE(stream,len+14,2);
+		row          = htd(dth2(rowAddr));
+	var colSpan      = SplitOffsetLE(stream,len+16,2);
+		colSpan      = htd(dth2(colSpan));
+	var rowSpan      = SplitOffsetLE(stream,len+18,2);
+		rowSpan 	 = htd(dth2(rowSpan));
+	var width 		 = SplitOffsetLE(stream,len+20,4);
+	var height       = SplitOffsetLE(stream,len+24,4);
+		width 		 = htd(dth(width)) / 7200 * 2.54 * 40;
+		height   	 = htd(dth(height)) / 7200 * 2.54 * 40;
+		
+		if(row != preRow)
+		{
+			
+			var tr 	= document.createElement('tr');
+				tr.id = "tr" + (tid-1) + row;
+				targetTable.appendChild(tr);
+				preRow = row;
+				console.log("create tr");
+				console.log("tid - 1 : " + (tid -1));
+				console.log("row : " + row);
+		}
+
+		console.log("create td");
+		var td = document.createElement('td');
+			td.id = "td" + (tid-1) + col + row;
+			td.colSpan = "" + colSpan;
+			td.rowSpan = "" + rowSpan;
+			td.setAttribute("style","width:" + width + "px;height:" + height+ "px;border:1px;border-style:solid;border-color:black");
+			console.log("domIdx : " + domIdx);
+			console.log("levelStack : " + levelStack[stackIdx])
+			
+			if( 1 == pflag)
+			{
+
+				console.log("push");
+				currentDOM.push(td);
+				domIdx++;
+				
+				
+			}
+			else if(0 == pflag)
+			{
+				currentDOM.pop();
+				currentDOM.push(td);
+				
+				
+			}
+				pflag = 0;
+			console.log(currentDOM);
+		
+		var parentTr = document.getElementById("tr" + (tid- 1 ) + row);
+			parentTr.appendChild(td);
+
+};
+
+var ExtractText = function(stream,sid)
+{
+
+	var i         = 0;
+	var SecArray  = [];
+	var plainText = "";
+	var hLen      = 0;
+	var s         = 0;
+
+		for( i = 0; i < sid; i++ )
+		{
+
+			SecArray[i]  = stream.find("Section"+i);
+			var sPlain = new pako.inflateRaw(SecArray[i].content);
+			//var sPlain   = sInflate.decompress();
+
+			while( hLen != sPlain.length)
+			{
+
+				s = getOffset(sPlain,hLen);
+				
+				switch(sPlain[hLen])
+				{
+					
+					case PARA_HEADER:
+						current_ref_id = SplitOffsetLE(sPlain,hLen+12,2);
+						current_ref_id = htd(dth2(current_ref_id));
+						break;
+					case CTRL_HEADER:
+						var ctrlIds = SplitOffsetLE(sPlain,hLen+4,4);
+						switch(hex2ha(ctrlIds,4))
+						{
+							case "tbl ":
+								var tableWidth   = SplitOffsetLE(sPlain,hLen+20,4);
+								var tableHeight  = SplitOffsetLE(sPlain,hLen+24,4);
+									
+									tableWidth   = htd(dth(tableWidth)) / 7200 * 2.54;
+									tableHeight  = htd(dth(tableHeight)) / 7200 * 2.54;
+
+									tableEffect(tableWidth,tableHeight);
+								break;
+							case "gso ":
+								var recWidth   = SplitOffsetLE(sPlain,hLen+20,4);
+								var recHeight  = SplitOffsetLE(sPlain,hLen+24,4);
+								var z_index    = SplitOffsetLE(sPlain,hLen+28,4);
+
+									z_index	   = htd(dth(z_index));
+									recWidth   = htd(dth(recWidth)) / 7200 * 2.54;
+									recHeight  = htd(dth(recHeight)) / 7200 * 2.54;
+
+									rectEffect(recWidth,recHeight,z_index);
+								break;
+							default:
+								break;
+						}
+						break;
+					case LIST_HEADER:
+						if( 1 == tflag )
+						{
+							processCell(sPlain,hLen);
+						}
+						break;
+					case PARA_TEXT:
+
+						processParaText(sPlain,hLen);
+						break;
+					case PARA_CHAR_SHAPE:
+						var k = 0;
+						for( k = 0; k < s; k += 8 )
+						{
+
+							var t_Pos  = SplitOffsetLE(sPlain,hLen + 4 + k, 4);
+							var t_Id = SplitOffsetLE(sPlain,hLen + 8 + k, 4);
+							
+							m_Id.push(htd(dth(t_Id)));
+							m_Pos.push(htd(dth(t_Pos)));
+
+						}
+
+
+						if(0 == levelStack[stackIdx])
+						{
+							replaceText(spantext,m_Id,m_Pos);
+						}
+						else if(1 == tflag)
+						{
+							replaceTextToTable(spantext,m_Id,m_Pos);
+						}
+						else if(0 == tflag)
+						{
+							replaceTextToRect(spantext,m_Id,m_Pos);
+						}
+
+						m_Id  = [];
+						m_Pos = [];
+						spantext = "&nbsp;";
+						break;
+					case SHAPE_COMPONENT_RECTANGLE:
+						var radius  = SplitOffsetLE(sPlain,hLen+4,1);
+						var offsetX = SplitOffsetLE(sPlain,hLen+5+4)
+						var offsetY = SplitOffsetLE(sPlain,hLen+9,4);
+						rectXY(offsetX,offsetY,radius);
+						break;
+					default:
+						break;
+				}
+				
+				hLen += 4 + s;
+
+			
+			}
+				var pTag   = document.createElement("p");
+				var spaner = document.createElement("span");
+					spaner.innerHTML = "&nbsp";
+					pTag.appendChild(spaner);
+				document.getElementById('plz').appendChild(pTag);
+			
+		}
+
+};
+
+var ExtractImg = function(cfb,stream,cnt)
+{
+	console.log(stream);
+	var i    = 0;
+	var pbin = "";
+	var k    = 0;
+	var img  = "";
+
+	for( i = 0; i < cnt; i++ )
+	{
+		pbin = "";
+		var cbin = cfb.find(stream[i]);
+		
+		var pPlain = new pako.inflateRaw(new Uint8Array(cbin.content));
+		//var pPlain   = pInflate.decompress();
+
+		
+		for (k = 0; k < pPlain.length; k++)
+		{
+		  		pbin += String.fromCharCode(pPlain[k]);
+		}
+
+		
+
+		img = document.createElement('img');
+		img.src = 'data:image/jpeg;base64,' + btoa(pbin);
+		img.name = "a"+i;
+
+		document.body.appendChild(img);
+		//draggable(img);
+	}
+
+};
+
+
+
+var record_para_shape = function()
+{
+	var aligns;
+};
+
+var record_char_shape = function()
+{
+	var font_size;
+	var property;
+	var italic;
+	var bold;
+	var colors;
+	var under_line;
+};
+
+var	Context = function(sPlain)
+{
+
+	var s    = 0;
+	var hLen = 0;
+
+			//console.log(sPlain.length);
+
+			while( hLen < sPlain.length)
+			{
+
+				s = getOffset(sPlain,hLen);
+				//console.log(hLen);
+				
+				switch(sPlain[hLen])
+				{
+					case CHAR_SHAPE:
+						
+						var rps = new record_char_shape();
+							
+							rps.font_size = SplitOffsetLE(sPlain,hLen+46,4);
+							rps.font_size = htd(dth(rps.font_size)) / 100;
+					
+							rps.property  = SplitOffsetLE(sPlain,hLen+50,4);
+							rps.italic    = htd(dth(rps.property)) & 0x1;
+								
+							rps.bold      = htd(dth(rps.property)) & 0x2;
+								
+							rps.under_line = htd(dth(rps.property)) >> 2 & 0x3;
+								
+							rps.colors    = SplitOffsetBE(sPlain,hLen+56,3);
+							rps.colors    = dth3(rps.colors);
+						
+							v_Context.push(rps);
+
+						break;
+					case PARA_SHAPE:
+						
+						var rcs = new record_para_shape();
+
+							rcs.aligns = SplitOffsetLE(sPlain,hLen+4,4); 
+							rcs.aligns = htd(dth(rcs.aligns)) >> 2 & 0x7;
+			
+							v_ContextAlign.push(rcs);
+
+						break;
+				
+					default:
+						break;
+				}
+				
+				hLen += 4 + s;
+
+			
+			}
+
+
+};
+
+function WonuOffice()
+{
+
+	var file = document.getElementById('hwps').files[0];
+	
+	//Create File Object
+	var reader = new FileReader();
+	
+	//File Read Success
+	reader.onload = function(e)
+	{
+
+		var buffer = e.target.result;
+		console.log(e.target.result);
+		var binary = "";
+		var bytes  = new Uint8Array(buffer);
+		var length = bytes.length;
+		console.log(length);
+		console.log(bytes.byteLength);
+		for (var i = 0; i < length; i++)
+		{
+		  	binary += String.fromCharCode(bytes[i]);
+		}
+		console.log(binary);
+		console.log("aaa");
+		var cfb        = CFB.read(binary,{type: 'binary'});
+		console.log("bbb");
+		var charData   = binary.split('').map(function(x){return x.charCodeAt(0);});
+		var binData    = new Uint8Array(charData);
+		var hdata      = new Uint16Array(charData);
+		var hCheck     = true;
+
+		var Header     = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+	
+		//Header Check
+		for(i = 0;i < 8; i++)
+		{
+			if(Header[i] != hdata[i])
+			{
+				hCheck = false;
+				break;
+			}
+		}
+		
+		//헤더가 일치한다면
+		
+		if(true === hCheck)
+		{
+			console.log("Head2");
+			var FHs  = cfb.find("FileHeader");
+			console.log("Head");
+			var cHwp = SplitOffsetBE(FHs.content,0,32);
+			    cHwp = hex2ha(cHwp,17);
+
+			if(true == CheckHwp(cHwp))
+			{
+				//압축 배포용 암호화 확인
+				
+				var bit = SplitOffsetBE(FHs.content,36,1);				
+				var compressed = bit & 0x01;
+				var encrypt    = bit & 0x02;
+				var distribute = bit & 0x04;
+
+				if( !(encrypt) && !(distribute) )
+				{
+					if(compressed)
+					{
+
+						var DocStream  = cfb.find('DocInfo');
+						//var DocInflate = new Zlib.RawInflate(new Uint8Array(DocStream.content));
+						var DocArray = new pako.inflateRaw(new Uint8Array(DocStream.content));
+						//console.log(DocInflates);
+						//var DocArray   = DocInflate.decompress();
+							console.log("docarray");
+							console.log(DocArray);
+							Context(DocArray);
+						var SecCnt     = SplitOffsetBE(DocArray,4,1);
+							//Section Count
+							SecCnt     = h2d(SecCnt);
+						var BinCount   = getBinDataCount(DocArray);
+							
+						var BinStorage = new Array(BinCount);
+								
+								for( z = 0; z < BinCount; z++ )
+								{
+									BinStorage[z] = new Array(2);
+								}
+
+
+							BinStorage = setBinData(cfb.FileIndex,BinCount);
+							//prvImg(cfb);
+							
+							ExtractText(cfb,SecCnt);
+
+
+							ExtractImg(cfb,BinStorage,BinCount);
+					}
+				}
+				else
+				{
+					alert('배포용 문서와 암호화문서는 열 수 없습니다.');
+					return -1;
+				}
+
+			}
+			else
+			{
+				alert('한글문서가 아닙니다.');
+			}
+
+		}
+		else
+		{
+			alert('문서가 아닙니다.');
+		}
+
+	};
+
+	
+	//Read As Array Buffer => File API ReadAsBinaryString
+	//익스플로러에서는 지원이 안되기때문에 어레이버퍼로 대체함
+	//Create File Stream
+	file = file.slice(0,10240000);
+	reader.readAsArrayBuffer(file);
+
+};
+
+
+var prvImg = function(cfb)
+{
+	
+	//var fApi = new FileWriter("prv.gif");
+	
+	var prv  = cfb.find("PrvImage");
+	var pbin = "";
+	console.log(prv.content);
+	for (var i = 0; i < prv.content.length; i++)
+	{
+		  	pbin += String.fromCharCode(prv.content[i]);
+	}
+	console.log(pbin);
+	var blob = new Blob([pbin], {type: "text/plain;charset=utf-8"});
+	saveAs(blob, "hello world.gif");
+
+};
+
+
+
+</script>
+</head>
+<body style="background-color:#9ca4a6;margin:0px;">
+	<br><br><br>
+	<div id="plz" style="font-size:9pt;line-height:1.2em;width: 500.75pt; padding: 40pt 85.5pt; min-height: 765.25pt; margin-left:auto;margin-right:auto;background-color:white;" contentEditable="true"></div><br><br>
+	<div style="width: 426.75pt;margin-left:auto;margin-right:auto;">
+	파일 업로드 : <input type="file" id="hwps"/>&nbsp;
+	<button onclick="WonuOffice()" style="margin-left:50px; width:100px;">텍스트 추출</button></div><br><br><br>
+	
+
+</body>
+</html>
